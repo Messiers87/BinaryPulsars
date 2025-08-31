@@ -1,4 +1,4 @@
-# Binary Pulsars – Kepler Equation Solver
+# General Eccentric Binary Pulsars
 
 This small project reproduces and extends results from the paper : 
 **Bagchi, Lorimer & Wolfe (2018) — "On the detectability of eccentric binary pulsars" ([arXiv:1302.4914](https://arxiv.org/pdf/1302.4914))**. 
