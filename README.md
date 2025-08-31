@@ -9,7 +9,7 @@ The main focus is to model the **line-of-sight velocity and acceleration** of a 
 - Implement orbital geometry of binary pulsars, including:
   - Kepler’s equation (mean anomaly → eccentric anomaly → true anomaly).
   - Line-of-sight velocity \(v_l(t)\) and acceleration \(a_l(f)\).
-- Reproduce **Figure 2** (velocity vs. time) and **Figure 3** (acceleration vs. true anomaly) from Bagchi et al. (2013).
+- Reproduce **Figure 2** (velocity vs. time) and **Figure 3** (acceleration vs. true anomaly) from Bagchi et al. (2018).
 
 
 ##  Methods
