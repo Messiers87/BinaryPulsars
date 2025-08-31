@@ -1,0 +1,18 @@
+# Ignore build folders
+Debug/
+Release/
+x64/
+ipch/
+
+# Ignore Visual Studio cache
+.vs/
+*.user
+*.VC.db
+*.VC.opendb
+
+# Ignore compiled objects
+*.obj
+*.exe
+*.dll
+*.pdb
+*.ilk
