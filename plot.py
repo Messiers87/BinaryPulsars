@@ -42,6 +42,7 @@ plt.xlabel("t (s)")
 plt.ylabel("v_l (m/s)")
 plt.title("Figure 2 (Upper panel)")
 plt.legend()
+plt.ylim(-100000, 100000) # adjust for good paper comparison
 
 # Lower panel
 plt.subplot(2,1,2)
@@ -54,6 +55,8 @@ plt.xlabel("t (s)")
 plt.ylabel("v_l (m/s)")
 plt.title("Figure 2 (Lower panel)")
 plt.legend()
+plt.ylim(-100000, 100000) # adjust for good paper comparison
+
 
 plt.tight_layout()
 plt.savefig("plots/fig2_velocity_py.png", dpi=200)
