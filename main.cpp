@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <cmath>
 #include <vector>
+#include <complex>
 #include <algorithm>
 namespace fs = std::filesystem;
 
@@ -13,6 +14,7 @@ constexpr long double G = 6.67430e-11L;         // m^3 kg^-1 s^-2
 constexpr long double MSUN = 1.98847e30L;          // kg
 constexpr long double DAY = 86400.0L;             // seconds
 constexpr long double PI = 3.141592653589793238462643383279502884L;
+constexpr long double C = 299792458.0L;          // m/s
 
 // ------- Angle helpers
 inline long double deg2rad(long double d) { return d * PI / 180.0L; }
@@ -71,7 +73,24 @@ long double projected_semi_major_axis(const OrbitParams& p) {
     return ap_prime;
 }
 
-// Line-of-sight velocity v_l(t) (Eq. 24)
+// LOS position at time t (equation 22)
+long double r_l(const OrbitParams& p, long double t) {
+    long double Po = p.Po_day * DAY;
+    long double omega_o = 2.0L * PI / Po;
+    long double e = p.e;
+    long double ap = projected_semi_major_axis(p);
+
+    // Kepler: M = ω_o (t - T_p), solve for E, then true anomaly f
+    long double M = omega_o * (t - p.Tp_s);
+    long double E = solve_kepler_E(M, e);
+    long double f = E_to_true_f(E, e);
+    long double varpi = deg2rad(p.varpi_deg);
+
+    long double rl = ap * sinl(f + varpi) * (1.0L - e * e) / (1.0L + e * cosl(f));
+    return rl;
+}
+
+// LOS velocity v_l(t) (equation 24)
 long double v_l(const OrbitParams& p, long double t) {
     long double Po = p.Po_day * DAY;
     long double omega_o = 2.0L * PI / Po;
@@ -90,7 +109,7 @@ long double v_l(const OrbitParams& p, long double t) {
     return vl;
 }
 
-// Line-of-sight acceleration a_l(f) as a function of true anomaly (Eq. 26)
+// LOS acceleration a_l(f) as a function of true anomaly (Eq. 26)
 long double a_l_of_f(const OrbitParams& p, long double f) {
     long double Po = p.Po_day * DAY;
     long double e = p.e;
@@ -102,9 +121,90 @@ long double a_l_of_f(const OrbitParams& p, long double f) {
     return al;
 }
 
+// ++++++++++ gamma function (Eq. 17)
+long double gamma1(const OrbitParams& baseParams, long double f, long double T_obs, int m, long double Pp_s) {
+
+	OrbitParams p = baseParams; // copy base parameters
+
+	long double Po = p.Po_day * DAY;
+	long double omega_o = 2.0L * PI / Po;
+	long double e = p.e;
+	long double ap = projected_semi_major_axis(p);
+
+    // compute Tp so that f(0) = f0
+	long double f0 = deg2rad(f);
+    long double tan_halfE = tanl(f0 / 2.0L) * sqrtl((1.0L - e) / (1.0L + e));
+	long double E0 = 2.0L * atanl(tan_halfE);
+
+	E0 = norm2pi(E0);
+	long double M0 = E0 - e * sinl(E0);
+	p.Tp_s = -M0 / omega_o; // Tp adjusted
+
+	// time sampling
+    const int N = 5000;
+    std::vector<long double> t_grid(N + 1);
+    std::vector<long double> r_grid(N + 1);
+    for (int i = 0; i <= N; i++) {
+		t_grid[i] = T_obs * ((long double)i) / ((long double)N);
+		r_grid[i] = r_l(p, t_grid[i]);
+    }
+
+	long double r0 = r_grid[0];
+
+    // constants
+	long double omega_p = 2.0L * PI / Pp_s;
+    long double K = m * omega_p / C;
+
+    // velocity bounds
+	long double vmin = 1.0e10L;
+	long double vmax = -1.0e10L;
+    for (int i = 1; i <= N; i++) {
+        long double v = (r_grid[i] - r_grid[i - 1]) / (t_grid[i] - t_grid[i - 1]);
+		if (v < vmin) vmin = v;
+		if (v > vmax) vmax = v;
+    }
+
+    // search over alpha_v
+	long double alpha_best = 0.0L;
+	long double gamma_best = 0.0L;
+
+    long double margin = 1e3L; // add 1 km/s margin
+
+    const int NA = 10000;
+    for (int i = 0; i < NA; i++) {
+        long double alpha = (vmin - margin) + (vmax - vmin * 2.0L * margin) * ((long double)i) / (((long double)NA - 1)); 
+
+		std::complex<long double> sum = 0.0L;
+
+		// trapezoidal integration
+        for (int j = 0; j < N; j++) {
+            long double phase1 = K * (r_grid[j] - r0 - alpha * t_grid[j]);
+            long double phase2 = K * (r_grid[j + 1] - r0 - alpha * t_grid[j + 1]);
+
+            std::complex<long double> e1 = std::polar(1.0L, phase1);
+			std::complex<long double> e2 = std::polar(1.0L, phase2);
+			sum += 0.5L * (e1 + e2) * (t_grid[j + 1] - t_grid[j]);
+        }
+
+		long double gamma = std::abs(sum) / T_obs;
+        if (gamma > gamma_best) {
+            gamma_best = gamma;
+            alpha_best = alpha;
+        }
+
+		
+
+    }
+    std::cerr << "vmin = " << vmin << ", vmax = " << vmax << std::endl;
+    std::cout << "alpha = " << alpha_best << ", gamma = " << gamma_best << std::endl;
+    return gamma_best;
+
+
+}
 
 int main() {
-    // --- Figure 2  ------------
+    // 1. ======== Figure 2
+    
     //Mp = 1.4 M⊙, Mc = 0.3 M⊙, Po = 0.5 day, i = 60◦,e = 0.5, Tp = 0, varpi = variable
     OrbitParams baseFig2{ 1.4L, 0.3L, 0.5L, 60.0L, 0.5L, 0.0L, 0.0L };
 
@@ -159,7 +259,8 @@ int main() {
     }
     f2.close();
 
-    // ---- Figure 3 ------------
+    // 2. ======== Figure 3 
+    
     // Mp = 1.4 M⊙, Mc = 0.3 M⊙,Po = 0.1 day i = 60◦, e = 0.5, Tp=0, varpi = 0◦  
     OrbitParams fig3{ 1.4L, 0.3L, 0.1L, 60.0L, 0.5L, 0.0L, 0.0L };
 
@@ -176,7 +277,45 @@ int main() {
 
     f3.close();
 
+	// 3. ========= gammma function
+
+	OrbitParams gammaParams{ 1.4L, 0.3L, 0.1L, 60.0L, 0.5L, 0.0L, 0.0L };
+
+    long double T_obs = 500.0L;
+	int m = 4;
+	long double Pp_s = 0.01L;
+
+    // list of starting true anomalies
+    std::vector<long double> f0_list = { 0.0L, 10.0L, 40.0L, 50.0L, 60.0L, 70.0L, 170.0L, 180.0L, 190.0L, 350.0L };
+
+	// ensure the output directory exists
+	fs::create_directories("data");
+
+	// open output file
+    std::ofstream table1("data/table1_results.csv");
+	table1.setf(std::ios::fixed); table1 << std::setprecision(6);
+	table1 << "f0_deg,gamma1" << '\n';
+
+	//debug
+    std::cout << "Number of f0 values: " << f0_list.size() << std::endl;
+
+	// compute gamma1 for each f0
+    for (auto f0 : f0_list) {
+		std::cout << "Computing gamma1 for f0 = " << f0 << std::endl;
+        long double gamma = gamma1(gammaParams, f0, T_obs, m, Pp_s);
+        table1 << f0 << "," << gamma << '\n';
+        std::cout << "f0=" << f0 << "deg -> gamma1 =" << gamma << std::endl;
+
+    }
+
+    table1.close();
+
     std::cerr << "wrote fig2_velcoity.csv and fig3_acc.csv";
+
+    //after computing gamma1
+	std::cerr << "wrote data/table1_results.csv\n";
+
+
     return 0;
 
 
