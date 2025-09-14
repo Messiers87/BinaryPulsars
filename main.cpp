@@ -6,6 +6,7 @@
 #include <vector>
 #include <complex>
 #include <algorithm>
+#include <chrono>
 namespace fs = std::filesystem;
 
 
@@ -121,91 +122,104 @@ long double a_l_of_f(const OrbitParams& p, long double f) {
     return al;
 }
 
-// ++++++++++ gamma function (Eq. 17)
+// ++++++++++ gamma function (Eq. 17) 
 long double gamma1(const OrbitParams& baseParams, long double f, long double T_obs, int m, long double Pp_s) {
 
-	OrbitParams p = baseParams; // copy base parameters
+    OrbitParams p = baseParams; 
 
-	long double Po = p.Po_day * DAY;
-	long double omega_o = 2.0L * PI / Po;
-	long double e = p.e;
-	long double ap = projected_semi_major_axis(p);
+    long double Po = p.Po_day * DAY;
+    long double omega_o = 2.0L * PI / Po;
+    long double e = p.e;
+    long double ap = projected_semi_major_axis(p);
 
     // compute Tp so that f(0) = f0
-	long double f0 = deg2rad(f);
+    long double f0 = deg2rad(f);
     long double tan_halfE = tanl(f0 / 2.0L) * sqrtl((1.0L - e) / (1.0L + e));
-	long double E0 = 2.0L * atanl(tan_halfE);
+    long double E0 = 2.0L * atanl(tan_halfE);
 
-	E0 = norm2pi(E0);
-	long double M0 = E0 - e * sinl(E0);
-	p.Tp_s = -M0 / omega_o; // Tp adjusted
+    E0 = norm2pi(E0);
+    long double M0 = E0 - e * sinl(E0);
+    p.Tp_s = -M0 / omega_o; 
 
-	// time sampling
-    const int N = 5000;
+    // time sampling
+    const int N = 3000; // reduced resolution (was 5000)
     std::vector<long double> t_grid(N + 1);
     std::vector<long double> r_grid(N + 1);
     for (int i = 0; i <= N; i++) {
-		t_grid[i] = T_obs * ((long double)i) / ((long double)N);
-		r_grid[i] = r_l(p, t_grid[i]);
+        t_grid[i] = T_obs * ((long double)i) / ((long double)N);
+        r_grid[i] = r_l(p, t_grid[i]);
     }
 
-	long double r0 = r_grid[0];
+    long double r0 = r_grid[0];
 
     // constants
-	long double omega_p = 2.0L * PI / Pp_s;
+    long double omega_p = 2.0L * PI / Pp_s;
     long double K = m * omega_p / C;
 
     // velocity bounds
-	long double vmin = 1.0e10L;
-	long double vmax = -1.0e10L;
+    long double vmin = 1.0e10L;
+    long double vmax = -1.0e10L;
     for (int i = 1; i <= N; i++) {
         long double v = (r_grid[i] - r_grid[i - 1]) / (t_grid[i] - t_grid[i - 1]);
-		if (v < vmin) vmin = v;
-		if (v > vmax) vmax = v;
+        if (v < vmin) vmin = v;
+        if (v > vmax) vmax = v;
     }
-
-    // search over alpha_v
-	long double alpha_best = 0.0L;
-	long double gamma_best = 0.0L;
-
     long double margin = 1e3L; // add 1 km/s margin
 
-    const int NA = 10000;
-    for (int i = 0; i < NA; i++) {
-        long double alpha = (vmin - margin) + (vmax - vmin * 2.0L * margin) * ((long double)i) / (((long double)NA - 1)); 
-
-		std::complex<long double> sum = 0.0L;
-
-		// trapezoidal integration
+    // helper lambda for trapezoidal integration
+    auto compute_gamma = [&](long double alpha) {
+        std::complex<long double> sum = 0.0L;
         for (int j = 0; j < N; j++) {
             long double phase1 = K * (r_grid[j] - r0 - alpha * t_grid[j]);
             long double phase2 = K * (r_grid[j + 1] - r0 - alpha * t_grid[j + 1]);
-
             std::complex<long double> e1 = std::polar(1.0L, phase1);
-			std::complex<long double> e2 = std::polar(1.0L, phase2);
-			sum += 0.5L * (e1 + e2) * (t_grid[j + 1] - t_grid[j]);
+            std::complex<long double> e2 = std::polar(1.0L, phase2);
+            sum += 0.5L * (e1 + e2) * (t_grid[j + 1] - t_grid[j]);
         }
+        return std::abs(sum) / T_obs;
+        };
 
-		long double gamma = std::abs(sum) / T_obs;
+    // === Stage 1: coarse scan ===
+    int NA_coarse = 100;
+    long double alpha_best = 0.0L;
+    long double gamma_best = -1.0L;
+
+    for (int i = 0; i < NA_coarse; i++) {
+        long double alpha = (vmin - margin) +
+            (vmax - vmin + 2.0L * margin) * ((long double)i) / ((long double)NA_coarse - 1);
+        long double gamma = compute_gamma(alpha);
         if (gamma > gamma_best) {
             gamma_best = gamma;
             alpha_best = alpha;
         }
-
-		
-
     }
-    std::cerr << "vmin = " << vmin << ", vmax = " << vmax << std::endl;
-    std::cout << "alpha = " << alpha_best << ", gamma = " << gamma_best << std::endl;
-    return gamma_best;
 
+    // === Stage 2: refine scan around best alpha ===
+    int NA_refine = 100;
+    long double refine_width = (vmax - vmin) / 50.0L; // narrower window
+    long double alpha_ref_best = alpha_best;
+    long double gamma_ref_best = gamma_best;
 
+    for (int i = 0; i < NA_refine; i++) {
+        long double alpha = alpha_best - refine_width / 2.0L +
+            refine_width * ((long double)i) / ((long double)NA_refine - 1);
+        long double gamma = compute_gamma(alpha);
+        if (gamma > gamma_ref_best) {
+            gamma_ref_best = gamma;
+            alpha_ref_best = alpha;
+        }
+    }
+
+    return gamma_ref_best;
 }
 
+
+
 int main() {
+    auto t1 = std::chrono::high_resolution_clock::now();
     // 1. ======== Figure 2
     
-    //Mp = 1.4 M⊙, Mc = 0.3 M⊙, Po = 0.5 day, i = 60◦,e = 0.5, Tp = 0, varpi = variable
+    //Mp = 1.4 , Mc = 0.3, Po = 0.5 day, i = 60,e = 0.5, Tp = 0, varpi = variable
     OrbitParams baseFig2{ 1.4L, 0.3L, 0.5L, 60.0L, 0.5L, 0.0L, 0.0L };
 
     std::vector<long double> varpi_upper = { 0.0L, 90.0L, 180.0L, 270.0L };
@@ -222,13 +236,10 @@ int main() {
 
     // Header
     f2 << "t_sec";
-
     //appending columns (upper panel)
     for (auto w : varpi_upper) f2 << ",v_varpi_" << (int)w << "deg";
-
     //appending columns (lower panel)
     for (auto w : varpi_lower) f2 << ",v_varpi_" << (int)w << "deg";
-
     //appending column (circular case)
     f2 << ",v_circular" << '\n';
 
@@ -294,29 +305,85 @@ int main() {
 	// open output file
     std::ofstream table1("data/table1_results.csv");
 	table1.setf(std::ios::fixed); table1 << std::setprecision(6);
-	table1 << "f0_deg,gamma1" << '\n';
+	table1 << "f0_deg,gamma1,w" << '\n';
 
-	//debug
-    std::cout << "Number of f0 values: " << f0_list.size() << std::endl;
+
+
+    auto compute_w = [&](long double f0_deg, long double e) {
+        long double f0 = deg2rad(f0_deg);
+        long double num = powl(1.0L + e * cosl(f0), -2.0L);
+        long double denom = powl(1.0L + e * cosl(PI), -2.0L);
+        return num / denom;
+        };
 
 	// compute gamma1 for each f0
     for (auto f0 : f0_list) {
+        std::cout << "loop 2: main func gamma loop start" << std::endl;
+        std::cout << "-------------" << std::endl;
 		std::cout << "Computing gamma1 for f0 = " << f0 << std::endl;
         long double gamma = gamma1(gammaParams, f0, T_obs, m, Pp_s);
-        table1 << f0 << "," << gamma << '\n';
-        std::cout << "f0=" << f0 << "deg -> gamma1 =" << gamma << std::endl;
+
+        long double w = compute_w(f0, gammaParams.e);
+
+        table1 << f0 << "," << gamma << w << '\n';
+        std::cout << "f0=" << f0 << "deg -> gamma1 =" << gamma << "w = "<< w << std::endl;
 
     }
 
     table1.close();
 
-    std::cerr << "wrote fig2_velcoity.csv and fig3_acc.csv";
+    // 4. ====== figure 4 data
 
-    //after computing gamma1
-	std::cerr << "wrote data/table1_results.csv\n";
+	//Mp, Mc, Po, i, e, Tp, varpi
+    OrbitParams fig4{ 1.4L, 0.3L, 0.01L, 60.0L, 0.5L, 0.0L, 0.0L };
 
+	fs::create_directories("data");
+	std::ofstream f4("data/fig4_data.csv");
+	f4.setf(std::ios::fixed); f4 << std::setprecision(6);
+	f4 << "Po_day,Pp_s,gamma1" << '\n';
+
+    std::vector<long double> Po_days = { 0.1L, 0.2L, 0.5L, 1.0L, 10.0L, 100.0L};
+    std::vector<long double> Pp_s_vec = { 0.001L, 0.005L, 0.01L, 0.05L, 0.1L, 1.0L };
+
+    long double T_obs_fig4 = 1000.0L;
+    int m_fig4 = 4;
+
+    for (auto Po_d : Po_days) {
+		std::cout << "-------------" << std::endl;
+        std::cout << "loop 3: figure 4 data loop" << std::endl;
+            for (auto Pp_s_val : Pp_s_vec) {
+            fig4.Po_day = Po_d;
+
+            long double sum_num = 0.0L;
+            long double sum_den = 0.0L;
+            for (int fdeg = 0; fdeg < 360; fdeg += 2) {   // greater than 360 points
+                long double gamma_f = gamma1(fig4, (long double)fdeg, T_obs_fig4, m_fig4, Pp_s_val);
+                long double w = powl(1.0L + fig4.e * cosl(deg2rad((long double)fdeg)), -2.0L);
+                sum_num += gamma_f * w;
+                sum_den += w;
+            }
+            long double gamma_avg = sum_num / sum_den;
+
+            f4 << Po_d << "," << Pp_s_val << "," << gamma_avg << '\n';
+            
+        }; 
+            std::cout << "===== end of loop 3 ===== " << std::endl;
+    };
+
+    f4.close();
+
+    //after computing gamma1 
+	std::cerr << "wrote data/fig4_data.csv with gamma1 for f0=180deg !\n";
+
+    auto t2 = std::chrono::high_resolution_clock::now();
+    std::cerr << "gamma1 call look" << std::chrono::duration<double>(t2 - t1).count() << "s\n";
+    std::cout << "end of program" << std::endl;
+    std::cin.get();
 
     return 0;
 
 
 }
+
+
+// 1094 sec
